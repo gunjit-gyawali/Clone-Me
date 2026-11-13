@@ -4,10 +4,12 @@ using UnityEngine.InputSystem;
 
 public class GameManager : MonoBehaviour
 {
-    public Transform player;
-    public GameObject ghostPrefab;
+    public Rigidbody2D playerBody;
+    public Rigidbody2D ghostPrefab;
 
-    public float ghostGlideSpeed = 12f;
+    public float moveSpeed = 12f;
+
+    [SerializeField] private int maxClones = 3;
 
     private InputAction moveUp;
     private InputAction moveDown;
@@ -19,6 +21,8 @@ public class GameManager : MonoBehaviour
     private Vector2Int playerSpawn;
 
     private float attemptTime;
+
+    private RaycastHit2D[] hitBuffer = new RaycastHit2D[4];
 
     private class RecordedCommand
     {
@@ -34,7 +38,7 @@ public class GameManager : MonoBehaviour
 
     private class GhostData
     {
-        public GameObject visual;
+        public Rigidbody2D body;
         public List<RecordedCommand> recording;
         public Vector2Int cell;
         public int playbackIndex;
@@ -43,8 +47,8 @@ public class GameManager : MonoBehaviour
     void Start()
     {
         playerSpawn = new Vector2Int(
-            Mathf.RoundToInt(player.position.x),
-            Mathf.RoundToInt(player.position.y));
+            Mathf.RoundToInt(playerBody.position.x),
+            Mathf.RoundToInt(playerBody.position.y));
 
         SetUpInput();
         StartAttempt();
@@ -83,9 +87,54 @@ public class GameManager : MonoBehaviour
         UpdateGhosts();
     }
 
+    void FixedUpdate()
+    {
+        MoveBodyTowardsCell(playerBody, playerCell);
+
+        foreach (GhostData ghost in ghosts)
+        {
+            MoveBodyTowardsCell(ghost.body, ghost.cell);
+        }
+    }
+
+    void MoveBodyTowardsCell(Rigidbody2D body, Vector2Int cell)
+    {
+        Vector2 target = new Vector2(cell.x, cell.y);
+        Vector2 nextPosition = Vector2.MoveTowards(body.position, target, moveSpeed * Time.fixedDeltaTime);
+        body.MovePosition(nextPosition);
+    }
+
+    bool HasArrived(Rigidbody2D body, Vector2Int cell)
+    {
+        Vector2 cellCenter = new Vector2(cell.x, cell.y);
+        return (body.position - cellCenter).sqrMagnitude < 0.0001f;
+    }
+
+    bool IsBlocked(Rigidbody2D body, Vector2Int direction)
+    {
+        ContactFilter2D filter = new ContactFilter2D();
+        filter.useTriggers = false;
+        filter.SetLayerMask(Physics2D.GetLayerCollisionMask(body.gameObject.layer));
+
+        int hitCount = body.Cast(new Vector2(direction.x, direction.y), filter, hitBuffer, 1f);
+
+        return hitCount > 0;
+    }
+
     void HandleInput()
     {
         if (moveUp == null)
+        {
+            return;
+        }
+
+        if (restartAction.WasPressedThisFrame())
+        {
+            RestartAndCreateGhost();
+            return;
+        }
+
+        if (!HasArrived(playerBody, playerCell))
         {
             return;
         }
@@ -106,21 +155,23 @@ public class GameManager : MonoBehaviour
         {
             TakeTurn(Vector2Int.right);
         }
-        else if (restartAction.WasPressedThisFrame())
-        {
-            RestartAndCreateGhost();
-        }
     }
 
     void TakeTurn(Vector2Int direction)
     {
-        playerCell = playerCell + direction;
-        player.position = new Vector3(playerCell.x, playerCell.y, 0);
-
         RecordedCommand command = new RecordedCommand();
         command.direction = direction;
         command.time = attemptTime;
         currentRecording.Add(command);
+
+        if (IsBlocked(playerBody, direction))
+        {
+            Debug.Log(attemptTime.ToString("F2") + "s: " + DirectionName(direction)
+                      + " blocked at " + (playerCell + direction) + " (still recorded)");
+            return;
+        }
+
+        playerCell = playerCell + direction;
 
         Debug.Log(attemptTime.ToString("F2") + "s: " + DirectionName(direction)
                   + " -> player at " + playerCell);
@@ -130,31 +181,49 @@ public class GameManager : MonoBehaviour
     {
         foreach (GhostData ghost in ghosts)
         {
-            while (ghost.playbackIndex < ghost.recording.Count
-                   && ghost.recording[ghost.playbackIndex].time <= attemptTime)
+            if (ghost.playbackIndex >= ghost.recording.Count)
             {
-                ghost.cell = ghost.cell + ghost.recording[ghost.playbackIndex].direction;
-                ghost.playbackIndex++;
+                continue;
             }
 
-            Vector3 target = new Vector3(ghost.cell.x, ghost.cell.y, 0);
-            ghost.visual.transform.position = Vector3.MoveTowards(
-                ghost.visual.transform.position, target, ghostGlideSpeed * Time.deltaTime);
+            RecordedCommand command = ghost.recording[ghost.playbackIndex];
+
+            if (command.time > attemptTime)
+            {
+                continue;
+            }
+
+            if (!HasArrived(ghost.body, ghost.cell))
+            {
+                continue;
+            }
+
+            if (!IsBlocked(ghost.body, command.direction))
+            {
+                ghost.cell = ghost.cell + command.direction;
+            }
+
+            ghost.playbackIndex++;
         }
     }
 
     void RestartAndCreateGhost()
     {
-        if (currentRecording.Count > 0)
+        if (currentRecording.Count == 0)
         {
-            savedRecordings.Add(currentRecording);
-
-            Debug.Log("Saved attempt " + savedRecordings.Count + ": "
-                      + RecordingToText(currentRecording));
+            Debug.Log("Nothing recorded yet, so no ghost was created.");
+        }
+        else if (savedRecordings.Count >= maxClones)
+        {
+            Debug.Log("Clone limit reached (" + maxClones + "). No more ghosts can be created.");
+            return;
         }
         else
         {
-            Debug.Log("Nothing recorded yet, so no ghost was created.");
+            savedRecordings.Add(currentRecording);
+
+            Debug.Log("Saved attempt " + savedRecordings.Count + " of " + maxClones + ": "
+                      + RecordingToText(currentRecording));
         }
 
         StartAttempt();
@@ -164,12 +233,12 @@ public class GameManager : MonoBehaviour
     {
         foreach (GhostData ghost in ghosts)
         {
-            Destroy(ghost.visual);
+            Destroy(ghost.body.gameObject);
         }
         ghosts.Clear();
 
         playerCell = playerSpawn;
-        player.position = new Vector3(playerCell.x, playerCell.y, 0);
+        playerBody.position = new Vector2(playerCell.x, playerCell.y);
         currentRecording = new List<RecordedCommand>();
 
         attemptTime = 0f;
@@ -180,7 +249,7 @@ public class GameManager : MonoBehaviour
             ghost.recording = recording;
             ghost.cell = playerSpawn;
             ghost.playbackIndex = 0;
-            ghost.visual = Instantiate(
+            ghost.body = Instantiate(
                 ghostPrefab,
                 new Vector3(playerSpawn.x, playerSpawn.y, 0),
                 Quaternion.identity);
