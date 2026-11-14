@@ -9,6 +9,11 @@ public class GameManager : MonoBehaviour
 
     public float moveSpeed = 12f;
 
+    public GameObject PressurePlateA;
+    public GameObject PressurePlateB;
+
+    public GameObject Door;
+
     [SerializeField] private int maxClones = 3;
 
     private InputAction moveUp;
@@ -23,6 +28,13 @@ public class GameManager : MonoBehaviour
     private float attemptTime;
 
     private RaycastHit2D[] hitBuffer = new RaycastHit2D[4];
+
+    private SpriteRenderer doorRenderer;
+    private Collider2D doorCollider;
+
+    private bool plateAPressed = false;
+    private bool plateBPressed = false;
+    private bool doorOpen = false;
 
     private class RecordedCommand
     {
@@ -50,6 +62,15 @@ public class GameManager : MonoBehaviour
             Mathf.RoundToInt(playerBody.position.x),
             Mathf.RoundToInt(playerBody.position.y));
 
+        doorRenderer = Door.GetComponent<SpriteRenderer>();
+        doorCollider = Door.GetComponent<Collider2D>();
+
+        if (doorCollider == null)
+        {
+            Debug.LogWarning("The Door has no Collider2D, so it cannot block anyone.");
+        }
+
+        SetDoor(false);
         SetUpInput();
         StartAttempt();
     }
@@ -85,6 +106,7 @@ public class GameManager : MonoBehaviour
 
         HandleInput();
         UpdateGhosts();
+        UpdatePlatesAndDoor();
     }
 
     void FixedUpdate()
@@ -119,6 +141,66 @@ public class GameManager : MonoBehaviour
         int hitCount = body.Cast(new Vector2(direction.x, direction.y), filter, hitBuffer, 1f);
 
         return hitCount > 0;
+    }
+
+    bool IsPlatePressed(GameObject plate)
+    {
+        Vector2Int plateCell = new Vector2Int(
+            Mathf.RoundToInt(plate.transform.position.x),
+            Mathf.RoundToInt(plate.transform.position.y));
+
+        if (HasArrived(playerBody, plateCell))
+        {
+            return true;
+        }
+
+        foreach (GhostData ghost in ghosts)
+        {
+            if (HasArrived(ghost.body, plateCell))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void UpdatePlatesAndDoor()
+    {
+        bool nowA = IsPlatePressed(PressurePlateA);
+        bool nowB = IsPlatePressed(PressurePlateB);
+
+        if (nowA != plateAPressed)
+        {
+            plateAPressed = nowA;
+            Debug.Log(PressurePlateA.name + (nowA ? " pressed" : " released"));
+        }
+
+        if (nowB != plateBPressed)
+        {
+            plateBPressed = nowB;
+            Debug.Log(PressurePlateB.name + (nowB ? " pressed" : " released"));
+        }
+
+        bool shouldBeOpen = plateAPressed && plateBPressed;
+
+        if (shouldBeOpen != doorOpen)
+        {
+            SetDoor(shouldBeOpen);
+        }
+    }
+
+    void SetDoor(bool open)
+    {
+        doorOpen = open;
+        doorRenderer.color = open ? Color.green : Color.red;
+
+        if (doorCollider != null)
+        {
+            doorCollider.enabled = !open;
+        }
+
+        Debug.Log(open ? "Door opened" : "Door closed");
     }
 
     void HandleInput()
